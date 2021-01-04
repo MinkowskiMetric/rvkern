@@ -3,7 +3,9 @@
 .global hello
 delay_app_processor:
     addi a1, zero, 1023
-    j delay_app_processor
+halt_spin:
+    wfi
+    j halt_spin
     
 .section .text.entry
 .global _entry
