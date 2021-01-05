@@ -2,14 +2,23 @@
 #![no_main]
 #![feature(global_asm)]
 
-global_asm!{include_str!("entry.S")}
+mod kprint;
+mod uart;
+
+global_asm! {include_str!("entry.S")}
 
 extern crate panic_halt;
 
 #[no_mangle]
-pub static mut STACK0: [u8;4096] = [0; 4096];
+pub static mut STACK0: [u8; 4096] = [0; 4096];
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> ! {
-    loop { }
+    static UART0_PHYSICAL_ADDRESS: u32 = 0x10000000;
+    let uart0 = uart::uart_init(UART0_PHYSICAL_ADDRESS);
+    kprint::init(uart0);
+
+    kprintln!("Starting rvkern...");
+
+    loop {}
 }

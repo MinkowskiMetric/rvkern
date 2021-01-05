@@ -21,3 +21,6 @@ _entry:
 spin:
     j spin
 
+bigstick:
+.global bigstick
+    j bigstick
