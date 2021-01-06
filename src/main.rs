@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(global_asm)]
+#![feature(thread_local)]
 
 #[macro_use]
 mod kprint;
@@ -9,8 +10,13 @@ mod uart;
 
 global_asm! {include_str!("entry.S")}
 
+#[repr(align(16))]
+pub struct StackHolder {
+    stack: [u8; 16384],
+}
+
 #[no_mangle]
-pub static mut STACK0: [u8; 4096] = [0; 4096];
+pub static mut STACK0: StackHolder = StackHolder { stack: [0; 16384], };
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> ! {
@@ -18,7 +24,7 @@ pub unsafe extern "C" fn start() -> ! {
     let uart0 = uart::uart_init(UART0_PHYSICAL_ADDRESS);
     kprint::init(uart0);
 
-    kprintln!("Starting rvkern...");
+    kprintln!("Starting rvkern... {}", 0);
 
     unimplemented!("I haven't written any more kernel yet");
 }

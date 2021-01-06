@@ -17,6 +17,8 @@ _entry:
     call delay_app_processor
 1:
     la sp, STACK0
+    li a0, 16384
+    add sp, sp, a0
     call start
 
 2:
