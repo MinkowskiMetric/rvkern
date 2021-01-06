@@ -1,6 +1,5 @@
 use super::uart;
 use core::fmt;
-use lazy_static::lazy_static;
 use spin::Mutex;
 
 // Damn. Can't do Box<dyn> if we don't have a memory manager. So we're going to have to
@@ -14,8 +13,7 @@ impl fmt::Write for Console {
         use uart::Uart;
         for byte in s.bytes() {
             match byte {
-                0x20..=0x7e => self.uart.write_byte(byte),
-                b'\n' => self.uart.write_byte(b'\n'),
+                b'\n' | 0x20..=0x7e => self.uart.write_byte(byte),
                 _ => self.uart.write_byte(0xfe),
             }
         }

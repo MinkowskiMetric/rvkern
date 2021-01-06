@@ -13,14 +13,12 @@ _entry:
     # for now we keep this very simple
     # If the hartid is 0, then we proceed else we spin
     csrr a1, mhartid
-    bne a1, zero, delay_app_processor
-
+    bne a1, zero, 1f
+    call delay_app_processor
+1:
     la sp, STACK0
     call start
 
-spin:
-    j spin
-
-bigstick:
-.global bigstick
-    j bigstick
+2:
+    wfi
+    j 2b

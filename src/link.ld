@@ -3,43 +3,54 @@ ENTRY( _entry )
 
 SECTIONS
 {
-  /*
-   * ensure that entry.S / _entry is at 0x80000000,
-   * where qemu's -kernel jumps.
-   */
-  . = 0x80000000;
+    /*
+    * ensure that entry.S / _entry is at 0x80000000,
+    * where qemu's -kernel jumps.
+    */
+    . = 0x80000000;
 
-  .text : {
-    *(.text.entry);
-    *(.text .text.*)
+    .text : {
+        __text_start = .;
+        *(.text.entry);
+        *(.text*)
+        . = ALIGN(4096);
+        __text_end = .;
+    }
+
+    .rodata : {
+        __rodata_start = .;
+        *(.rodata*)
+        . = ALIGN(4096);
+        __rodata_end = .;
+    }
+
+    .data : {
+        __data_start = .;
+        *(.data*)
+        *(.got*)
+        . = ALIGN(4096);
+        __data_end = .;
+    }
+
+    .tdata : {
+        __tdata_start = .;
+        *(.tdata*)
+        . = ALIGN(4096);
+        __tdata_end = .;
+        __tbss_start = .;
+        *(.tbss*)
+        . += 8;
+        . = ALIGN(4096);
+        __tbss_end = .;
+    }
+
+    .bss : {
+        __bss_start = .;
+        *(.bss*)
+        . = ALIGN(4096);
+        __bss_end = .;
+    }
+    
     . = ALIGN(0x1000);
-    /*_trampoline = .;
-    *(trampsec)
-    . = ALIGN(0x1000);
-    ASSERT(. - _trampoline == 0x1000, "error: trampoline larger than one page");*/
-    PROVIDE(etext = .);
-  }
-
-  .rodata : {
-    . = ALIGN(16);
-    *(.srodata .srodata.*) /* do not need to distinguish this from .rodata */
-    . = ALIGN(16);
-    *(.rodata .rodata.*)
-  }
-
-  .data : {
-    . = ALIGN(16);
-    *(.sdata .sdata.*) /* do not need to distinguish this from .data */
-    . = ALIGN(16);
-    *(.data .data.*)
-  }
-
-  .bss : {
-    . = ALIGN(16);
-    *(.sbss .sbss.*) /* do not need to distinguish this from .bss */
-    . = ALIGN(16);
-    *(.bss .bss.*)
-  }
-
-  PROVIDE(end = .);
+    __kernel_end = .;
 }

@@ -1,17 +1,17 @@
-const RHR: u32 = 0;
+//const RHR: u32 = 0;
 const THR: u32 = 0;
 const IER: u32 = 1;
-const IER_RX_ENABLE: u8 = 0b00000001;
-const IER_TX_ENABLE: u8 = 0b00000010;
+//const IER_RX_ENABLE: u8 = 0b00000001;
+//const IER_TX_ENABLE: u8 = 0b00000010;
 const FCR: u32 = 2;
 const FCR_FIFO_ENABLE: u8 = 0b00000001;
 const FCR_FIFO_CLEAR: u8 = 0b00000110;
-const ISR: u32 = 2;
+//const ISR: u32 = 2;
 const LCR: u32 = 3;
 const LCR_EIGHT_BITS: u8 = 0b00000011;
 const LCR_BAUD_LATCH: u8 = 0b10000000;
 const LSR: u32 = 5;
-const LSR_RX_READY: u8 = 0b00000001;
+//const LSR_RX_READY: u8 = 0b00000001;
 const LSR_TX_IDLE: u8 = 0b00100000;
 
 pub struct UART16650 {
@@ -49,13 +49,13 @@ impl UART16650 {
 
     fn read_register(&mut self, offset: u32) -> u8 {
         let register = (self.base_address + offset) as *const u8;
-        unsafe { *register }
+        unsafe { core::ptr::read_volatile(register) }
     }
 
     fn write_register(&mut self, offset: u32, value: u8) {
         let register = (self.base_address + offset) as *mut u8;
         unsafe {
-            *register = value;
+            core::ptr::write_volatile(register, value)
         }
     }
 }
