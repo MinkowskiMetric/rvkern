@@ -54,9 +54,7 @@ impl UART16650 {
 
     fn write_register(&mut self, offset: u32, value: u8) {
         let register = (self.base_address + offset) as *mut u8;
-        unsafe {
-            core::ptr::write_volatile(register, value)
-        }
+        unsafe { core::ptr::write_volatile(register, value) }
     }
 }
 
