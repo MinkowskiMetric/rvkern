@@ -5,5 +5,9 @@ fn panic(info: &PanicInfo) -> ! {
     // TODOTODOTODO - this needs to be more complicated.
     kprintln!("{}", info);
 
-    loop {}
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem));
+        }
+    }
 }

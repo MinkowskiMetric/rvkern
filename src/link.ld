@@ -20,6 +20,7 @@ SECTIONS
     * where qemu's -kernel jumps.
     */
     . = 0x80000000;
+    __kernel_start = .;
 
     .text : {
         ASSERT(. == 0x80000000, "Entry point not at correct address");

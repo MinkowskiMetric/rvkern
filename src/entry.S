@@ -10,9 +10,6 @@ _entry:
     csrr t0, mhartid
     bnez t0, app_processor_stall
 
-    # Ensure that paging is disabled in supervisor mode for now before we switch into it
-    csrw satp, zero
-
     # And load the correct global pointer
     # TODOTODOTODO how can I verify this is working?
 .option push
@@ -31,6 +28,29 @@ _entry:
 
     # Set up a stack
     la sp, _boot_stack_end
+
+    # Before we transfer into supervisor mode, we need to set up the initial paging environment for it.
+    # We do this here - annoyingly in assembly language - because it simplifies things if we can make sure
+    # that rust is always running in supervisor mode with paging enabled. One way we could simplify this 
+    # would be if we had a stage 2 bootloader that set things up. I would do that, but it makes building harder 
+    # which I don't want to do until I have no choice.
+    la a0, __kernel_start
+    la a1, __kernel_end
+    call _identity_map_physical_region
+
+    # For the moment the rust code assumes that the UART is physically mapped at 0x10000000. Let's not upset it too
+    # much for now
+    li a0, 0x10000000
+    add a1, a0, 1
+    call _identity_map_physical_region
+
+    # Load the page table register and enable paging
+    # Need to shift the page table address right to get the PFN.
+    la t0, _s_root_page_table
+    srl t0, t0, 12
+    li t1, 0x80000000
+    or t0, t0, t1
+    csrw satp, t0
     
     # Now we need to call rust, but we also want to get into supervisor mode (we're currently in machine mode
     # which is not what we want). To do that, we set up as if we are returning to rust from a machine mode trap
@@ -73,6 +93,36 @@ _boot_zero_range:
 2:
     ret
 
+_identity_map_physical_region:
+    # Compute the page directory index of the start of the kernel. We keep this
+    # as an offset into the page table for convenience
+    srl t1, a0, 22 - 2
+    la t0, _s_root_page_table
+    add t1, t1, t0
+
+    # the shift here is necessary because the CPU has a 34 bit physical address space, so we need to take that
+    # into account
+    srl a0, a0, 2
+    srl a1, a1, 2
+
+    # We also need to shift the start and end registers
+1:
+    # Map it as read, write, execute, valid, and global
+    li t0, 0b101111
+    or t0, t0, a0
+    sw t0, (t1)
+
+    # Move the table position on
+    addi t1, t1, 4
+    li t0, (1024 * 4096) >> 2
+    add a0, a0, t0
+    
+    # Check if we've reached the end
+    bltu a0, a1, 1b
+
+    # done
+    ret
+
 .section .bss
 .balign 4096
 .global _boot_stack
@@ -80,3 +130,7 @@ _boot_stack:
 .fill 4096
 _boot_stack_end:
 
+.balign 4096
+.global _s_root_page_table
+_s_root_page_table:
+.fill 4096

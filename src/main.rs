@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-#![feature(global_asm)]
+#![feature(asm, global_asm)]
 #![feature(thread_local)]
 
 #[macro_use]
