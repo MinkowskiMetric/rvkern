@@ -70,6 +70,12 @@ SECTIONS
     . = ALIGN(0x1000);
     __kernel_end = .;
 
+    /* The goal here is to define all of RAM in one place, so the kernel will use these values
+       to work out where physical memory is, and the bootloader will use them to map all of physical
+       memory */
+    __memory_start = ORIGIN(ram);
+    __memory_end = ORIGIN(ram) + LENGTH(ram);
+
     /DISCARD/ : {
         *(.comment*)
         *(.eh_frame*)

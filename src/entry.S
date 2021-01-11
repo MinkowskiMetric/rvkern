@@ -34,8 +34,8 @@ _entry:
     # that rust is always running in supervisor mode with paging enabled. One way we could simplify this 
     # would be if we had a stage 2 bootloader that set things up. I would do that, but it makes building harder 
     # which I don't want to do until I have no choice.
-    la a0, __kernel_start
-    la a1, __kernel_end
+    la a0, __memory_start
+    la a1, __memory_end
     call _identity_map_physical_region
 
     # For the moment the rust code assumes that the UART is physically mapped at 0x10000000. Let's not upset it too
