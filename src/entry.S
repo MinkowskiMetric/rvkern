@@ -46,7 +46,7 @@ _entry:
 
     # Load the page table register and enable paging
     # Need to shift the page table address right to get the PFN.
-    la t0, _s_root_page_table
+    la t0, _s_boot_page_table
     srl t0, t0, 12
     li t1, 0x80000000
     or t0, t0, t1
@@ -97,7 +97,7 @@ _identity_map_physical_region:
     # Compute the page directory index of the start of the kernel. We keep this
     # as an offset into the page table for convenience
     srl t1, a0, 22 - 2
-    la t0, _s_root_page_table
+    la t0, _s_boot_page_table
     add t1, t1, t0
 
     # the shift here is necessary because the CPU has a 34 bit physical address space, so we need to take that
@@ -131,6 +131,6 @@ _boot_stack:
 _boot_stack_end:
 
 .balign 4096
-.global _s_root_page_table
-_s_root_page_table:
+.global _s_boot_page_table
+_s_boot_page_table:
 .fill 4096

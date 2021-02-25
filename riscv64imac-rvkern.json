@@ -1,7 +1,7 @@
 {
   "llvm-target": "riscv64imac-unknown-none-elf",
   "data-layout": "e-m:e-i64:64-f80:128-n8:16:32:64-S128",
-  "arch": "x86_64",
+  "arch": "riscv",
   "target-endian": "little",
   "target-pointer-width": "64",
   "target-c-int-width": "32",
@@ -16,5 +16,6 @@
   },
   "panic-strategy": "abort",
   "disable-redzone": true,
-  "features": "-mmx,-sse,+soft-float"
+  "features": "-mmx,-sse,+soft-float",
+  "relocation_model": "cheese"
 }

@@ -124,6 +124,10 @@ impl PageFrameIndex {
         // physical address
         unsafe { PhysicalAddress::new_unchecked((self.0 as u64) << 12) }
     }
+
+    pub const fn pfi(&self) -> u32 {
+        self.0
+    }
 }
 
 impl From<PageFrameIndex> for PhysicalAddress {
@@ -209,7 +213,10 @@ impl Iterator for PageFrameRange {
     }
 }
 
-pub fn page_frame_index_range<Page: Into<PageFrameIndex>>(start: Page, end: Page) -> impl Iterator<Item = PageFrameIndex> {
+pub fn page_frame_index_range<Page: Into<PageFrameIndex>>(
+    start: Page,
+    end: Page,
+) -> impl Iterator<Item = PageFrameIndex> {
     PageFrameRange {
         pos: start.into(),
         end: end.into(),
@@ -240,13 +247,15 @@ pub fn allocate_page() -> Option<PhysicalAddress> {
     if let Some(page_head) = free_list.head.take() {
         // Reattach the rest of the list
         free_list.head = page_head.next.take();
-        free_list.free_pages = free_list.free_pages - 1;
+        free_list.free_pages -= 1;
 
         // Now we need to get the pointer to the page
         let page_head = page_head as *mut FreePageEntry;
         let page_addr = PhysicalAddress::try_from(page_head).unwrap();
 
-        unsafe { core::ptr::drop_in_place(page_head); }
+        unsafe {
+            core::ptr::drop_in_place(page_head);
+        }
 
         Some(page_addr)
     } else {
@@ -261,19 +270,25 @@ pub unsafe fn free_page(page: impl Into<PhysicalAddress>) {
     let page = page.addr() as *mut MaybeUninit<FreePageEntry>;
 
     let new_list = page.as_mut().unwrap().write(FreePageEntry {
-        next: free_list.head.take()
+        next: free_list.head.take(),
     });
 
     free_list.head = Some(new_list);
-    free_list.free_pages = free_list.free_pages + 1;
+    free_list.free_pages += 1;
 }
 
 pub unsafe fn init() {
     kprintln!("RAM START: {:?} END: {:?}", ram_start(), ram_end());
     kprintln!("KERNEL START: {:?} END: {:?}", kernel_start(), kernel_end());
 
-    assert!(kernel_start() == ram_start(), "Kernel should start at start of RAM");
-    assert!(kernel_end() < ram_end(), "Kernel should leave some RAM available");
+    assert!(
+        kernel_start() == ram_start(),
+        "Kernel should start at start of RAM"
+    );
+    assert!(
+        kernel_end() < ram_end(),
+        "Kernel should leave some RAM available"
+    );
 
     for pfi in page_frame_index_range(ram_start(), ram_end()) {
         if pfi < kernel_start().page_frame_index() || pfi >= kernel_end().page_frame_index() {
@@ -281,11 +296,18 @@ pub unsafe fn init() {
         }
     }
 
-    kprintln!("Initialized physical memory with {} pages available", free_pages());
+    kprintln!(
+        "Initialized physical memory with {} pages available",
+        free_pages()
+    );
     let (p1, p2) = (allocate_page(), allocate_page());
-    kprintln!("Allocated pages {:?} and {:?} (which comes after kernel_end {:?}", p1, p2, kernel_end());
+    kprintln!(
+        "Allocated pages {:?} and {:?} (which comes after kernel_end {:?}",
+        p1,
+        p2,
+        kernel_end()
+    );
     kprintln!("{} pages available", free_pages());
     free_page(p1.unwrap());
     kprintln!("{} pages available", free_pages());
-
 }
