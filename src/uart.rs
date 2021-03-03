@@ -1,3 +1,5 @@
+use crate::VirtualAddress;
+
 //const RHR: u32 = 0;
 const THR: u32 = 0;
 const IER: u32 = 1;
@@ -15,7 +17,7 @@ const LSR: u32 = 5;
 const LSR_TX_IDLE: u8 = 0b00100000;
 
 pub struct UART16650 {
-    base_address: u32,
+    base_address: VirtualAddress,
 }
 
 pub trait Uart {
@@ -23,7 +25,7 @@ pub trait Uart {
 }
 
 impl UART16650 {
-    fn new(base_address: u32) -> Self {
+    fn new(base_address: VirtualAddress) -> Self {
         let mut ret = Self { base_address };
         ret.init();
         ret
@@ -48,12 +50,12 @@ impl UART16650 {
     }
 
     fn read_register(&mut self, offset: u32) -> u8 {
-        let register = (self.base_address + offset) as *const u8;
+        let register = (self.base_address.addr() + offset as usize) as *const u8;
         unsafe { core::ptr::read_volatile(register) }
     }
 
     fn write_register(&mut self, offset: u32, value: u8) {
-        let register = (self.base_address + offset) as *mut u8;
+        let register = (self.base_address.addr() + offset as usize) as *mut u8;
         unsafe { core::ptr::write_volatile(register, value) }
     }
 }
@@ -70,6 +72,6 @@ impl Uart for UART16650 {
     }
 }
 
-pub fn uart_init(base_address: u32) -> UART16650 {
+pub fn uart_init(base_address: VirtualAddress) -> UART16650 {
     UART16650::new(base_address)
 }

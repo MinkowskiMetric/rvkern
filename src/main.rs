@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(asm, global_asm)]
+#![feature(const_maybe_uninit_assume_init)]
 #![feature(const_fn_transmute)]
 #![feature(maybe_uninit_extra)]
 #![feature(maybe_uninit_uninit_array)]
@@ -16,6 +17,7 @@ mod physmem;
 mod uart;
 pub mod utils;
 
+pub use kernel_vm::{kernel_vm, MappingMode, VirtualAddress};
 pub use physmem::{
     allocate_page, free_page, free_pages, PageFrameIndex, PhysicalAddress, RamPhysicalAddress,
 };
@@ -24,12 +26,9 @@ global_asm! {include_str!("entry.S")}
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> ! {
-    kprint::init_pre_vm();
-
-    kprintln!("Starting rvkern... {}", 0);
     physmem::init();
     kernel_vm::init();
-    kprint::init_post_vm();
+    kprint::init();
 
     unimplemented!("I haven't written any more kernel yet");
 }

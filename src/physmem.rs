@@ -1,7 +1,8 @@
+use crate::utils::*;
 use core::convert::TryFrom;
 use core::fmt;
 use core::mem::MaybeUninit;
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 // This module is responsible for maintaining the list of physical pages. Currently we have two
 // states for physical pages - in use, and available. Since all physical pages are mapped in RAM
@@ -43,6 +44,126 @@ pub struct PhysicalAddress(u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RamPhysicalAddress(PhysicalAddress);
+
+#[derive(Debug, Clone, Copy)]
+enum PageFrameDatabaseEntry {
+    Available { next: Option<usize> },
+    InUse,
+    Unknown,
+}
+
+fn get_initial_page_entry(addr: PhysicalAddress) -> PageFrameDatabaseEntry {
+    if addr >= kernel_start() && addr < kernel_end() {
+        PageFrameDatabaseEntry::InUse
+    } else if addr >= ram_start() && addr < ram_end() {
+        PageFrameDatabaseEntry::Available { next: None }
+    } else {
+        PageFrameDatabaseEntry::Unknown
+    }
+}
+
+impl Default for PageFrameDatabaseEntry {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+struct PageFrameDatabaseZone {
+    entries: &'static mut [PageFrameDatabaseEntry],
+    available: usize,
+    free_list_head: Option<usize>,
+    base_address: PhysicalAddress,
+}
+
+impl PageFrameDatabaseZone {
+    pub fn free_pages(&self) -> usize {
+        self.available
+    }
+
+    pub fn allocate_page(&mut self) -> Option<PhysicalAddress> {
+        if let Some(free_page_index) = self.free_list_head {
+            match self.entries[free_page_index] {
+                PageFrameDatabaseEntry::Available { next } => {
+                    self.free_list_head = next;
+                    self.available -= 1;
+
+                    Some(self.page_index_to_physical_address(free_page_index))
+                }
+
+                entry => panic!(
+                    "Expected available page in PFDB entry {}, found {:?}",
+                    free_page_index, entry
+                ),
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn free_page(&mut self, addr: PhysicalAddress) {
+        unimplemented!()
+    }
+
+    fn page_index_to_physical_address(&self, idx: usize) -> PhysicalAddress {
+        PhysicalAddress::new(self.base_address.addr() + (idx * PAGE_SIZE) as u64)
+    }
+}
+
+struct PageFrameDatabaseLock<'a>(MutexGuard<'a, Option<PageFrameDatabaseZone>>);
+
+impl<'a> core::ops::Deref for PageFrameDatabaseLock<'_> {
+    type Target = PageFrameDatabaseZone;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl<'a> core::ops::DerefMut for PageFrameDatabaseLock<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+
+fn initial_zone<'a>() -> PageFrameDatabaseLock<'a> {
+    static ZONE: Mutex<Option<PageFrameDatabaseZone>> = Mutex::new(None);
+
+    let mut lock = ZONE.lock();
+    lock.get_or_insert_with(|| {
+        const INITIAL_ZONE_PAGES: usize = 1024; // Enough for 4MB
+        static mut INITIAL_ZONE_ENTRIES: [core::mem::MaybeUninit<PageFrameDatabaseEntry>;
+            INITIAL_ZONE_PAGES] = core::mem::MaybeUninit::uninit_array();
+
+        let base_address = ram_start();
+
+        let entries = unsafe { &mut INITIAL_ZONE_ENTRIES[0..INITIAL_ZONE_PAGES] };
+        let mut available = 0;
+        let mut free_list_head = None;
+        for (idx, entry) in entries.iter_mut().enumerate() {
+            let addr = PhysicalAddress(base_address.addr() + (idx * PAGE_SIZE) as u64);
+            *entry = MaybeUninit::new(match get_initial_page_entry(addr) {
+                PageFrameDatabaseEntry::Available { .. } => {
+                    available += 1;
+                    PageFrameDatabaseEntry::Available {
+                        next: free_list_head.replace(idx),
+                    }
+                }
+
+                c => c,
+            });
+        }
+
+        let entries: &mut [PageFrameDatabaseEntry] = unsafe { core::mem::transmute(entries) };
+
+        PageFrameDatabaseZone {
+            entries,
+            available,
+            free_list_head,
+            base_address,
+        }
+    });
+    PageFrameDatabaseLock(lock)
+}
 
 impl RamPhysicalAddress {
     pub fn try_new(addr: PhysicalAddress) -> Option<Self> {
@@ -100,6 +221,10 @@ impl PhysicalAddress {
         // Safety - this is safe because we know that a valid physical address must also be
         // a valid page frame index
         unsafe { PageFrameIndex::new_unchecked((self.0 >> 12) as u32) }
+    }
+
+    pub const fn round_down_to_page(&self) -> PhysicalAddress {
+        self.page_frame_index().physical_address()
     }
 }
 
@@ -213,101 +338,16 @@ impl Iterator for PageFrameRange {
     }
 }
 
-pub fn page_frame_index_range<Page: Into<PageFrameIndex>>(
-    start: Page,
-    end: Page,
-) -> impl Iterator<Item = PageFrameIndex> {
-    PageFrameRange {
-        pos: start.into(),
-        end: end.into(),
-    }
-}
-
-struct FreePageEntry {
-    next: Option<&'static mut FreePageEntry>,
-}
-
-struct FreePageList {
-    head: Option<&'static mut FreePageEntry>,
-    free_pages: usize,
-}
-
-static FREE_PAGE_LIST: Mutex<FreePageList> = Mutex::new(FreePageList {
-    head: None,
-    free_pages: 0,
-});
-
 pub fn free_pages() -> usize {
-    FREE_PAGE_LIST.lock().free_pages
+    initial_zone().free_pages()
 }
 
 pub fn allocate_page() -> Option<PhysicalAddress> {
-    let mut free_list = unsafe { FREE_PAGE_LIST.lock() };
-
-    if let Some(page_head) = free_list.head.take() {
-        // Reattach the rest of the list
-        free_list.head = page_head.next.take();
-        free_list.free_pages -= 1;
-
-        // Now we need to get the pointer to the page
-        let page_head = page_head as *mut FreePageEntry;
-        let page_addr = PhysicalAddress::try_from(page_head).unwrap();
-
-        unsafe {
-            core::ptr::drop_in_place(page_head);
-        }
-
-        Some(page_addr)
-    } else {
-        None
-    }
+    initial_zone().allocate_page()
 }
 
 pub unsafe fn free_page(page: impl Into<PhysicalAddress>) {
-    let mut free_list = FREE_PAGE_LIST.lock();
-
-    let page = page.into();
-    let page = page.addr() as *mut MaybeUninit<FreePageEntry>;
-
-    let new_list = page.as_mut().unwrap().write(FreePageEntry {
-        next: free_list.head.take(),
-    });
-
-    free_list.head = Some(new_list);
-    free_list.free_pages += 1;
+    initial_zone().free_page(page.into())
 }
 
-pub unsafe fn init() {
-    kprintln!("RAM START: {:?} END: {:?}", ram_start(), ram_end());
-    kprintln!("KERNEL START: {:?} END: {:?}", kernel_start(), kernel_end());
-
-    assert!(
-        kernel_start() == ram_start(),
-        "Kernel should start at start of RAM"
-    );
-    assert!(
-        kernel_end() < ram_end(),
-        "Kernel should leave some RAM available"
-    );
-
-    for pfi in page_frame_index_range(ram_start(), ram_end()) {
-        if pfi < kernel_start().page_frame_index() || pfi >= kernel_end().page_frame_index() {
-            free_page(pfi);
-        }
-    }
-
-    kprintln!(
-        "Initialized physical memory with {} pages available",
-        free_pages()
-    );
-    let (p1, p2) = (allocate_page(), allocate_page());
-    kprintln!(
-        "Allocated pages {:?} and {:?} (which comes after kernel_end {:?}",
-        p1,
-        p2,
-        kernel_end()
-    );
-    kprintln!("{} pages available", free_pages());
-    free_page(p1.unwrap());
-    kprintln!("{} pages available", free_pages());
-}
+pub unsafe fn init() {}

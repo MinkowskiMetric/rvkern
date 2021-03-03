@@ -1,4 +1,5 @@
 use super::uart;
+use crate::{utils::*, MappingMode, PhysicalAddress};
 use core::fmt;
 use spin::Mutex;
 
@@ -24,20 +25,14 @@ impl fmt::Write for Console {
 
 static CONSOLE: Mutex<Option<Console>> = Mutex::new(None);
 
-pub fn init_pre_vm() {
-    // The bootloader identity maps the UART into virtual memory for us, but that's silly
-    // for various reasons, mostly because the identity mapping it puts the UART right in the
-    // middle of user mode VA, so that will have to change. Because we think it would be useful
-    // to be able to print things during vmem bringup though, we have this early initializer that
-    // uses that identity mapping.
-    static UART0_PHYSICAL_ADDRESS: u32 = 0x10000000;
-    let uart = uart::uart_init(UART0_PHYSICAL_ADDRESS);
+pub fn init() {
+    let uart0_physical_address: PhysicalAddress = PhysicalAddress::new(0x10000000);
+    let uart_allocation = crate::kernel_vm()
+        .map_physical_region(uart0_physical_address, PAGE_SIZE, MappingMode::ReadWrite)
+        .expect("Failed to map UART");
+    let uart = uart::uart_init(uart_allocation);
 
-    *CONSOLE.lock() = Some(Console { uart });
-}
-
-pub fn init_post_vm() {
-    unimplemented!()
+    *CONSOLE.lock() = Some(Console { uart })
 }
 
 #[doc(hidden)]

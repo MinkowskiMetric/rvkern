@@ -38,12 +38,6 @@ _entry:
     la a1, __memory_end
     call _identity_map_physical_region
 
-    # For the moment the rust code assumes that the UART is physically mapped at 0x10000000. Let's not upset it too
-    # much for now
-    li a0, 0x10000000
-    add a1, a0, 1
-    call _identity_map_physical_region
-
     # Load the page table register and enable paging
     # Need to shift the page table address right to get the PFN.
     la t0, _s_boot_page_table
@@ -127,7 +121,7 @@ _identity_map_physical_region:
 .balign 4096
 .global _boot_stack
 _boot_stack:
-.fill 4096
+.fill 8192
 _boot_stack_end:
 
 .balign 4096

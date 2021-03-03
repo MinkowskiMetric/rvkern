@@ -1,15 +1,23 @@
 use crate::utils::*;
 use crate::{PageFrameIndex, PhysicalAddress, RamPhysicalAddress};
-use core::borrow::BorrowMut;
 use core::convert::{TryFrom, TryInto};
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Index, IndexMut};
-use core::sync::atomic::{AtomicBool, Ordering};
 use riscv::register::satp;
 use spin::{Mutex, MutexGuard};
 
-const HYPERSPACE_VA_START: VirtualAddress = VirtualAddress(0xc0000000);
+const HYPERSPACE_VA_START: VirtualAddress = VirtualAddress(0xc000_0000);
+
+const SYSTEM_PTE_VA_START: VirtualAddress = VirtualAddress(0xd000_0000);
+
+// How many system PTEs do we need? 64MB of kernel memory seems like a good figure, which is
+// 16 page tables, or 16384 page table entries
+const SYSTEM_PTE_PAGE_TABLES: usize = 16;
+const SYSTEM_PTE_COUNT: usize = SYSTEM_PTE_PAGE_TABLES * 1024;
+const SYSTEM_PTE_LENGTH: usize = SYSTEM_PTE_COUNT * PAGE_SIZE;
+const SYSTEM_PTE_VA_END: VirtualAddress =
+    VirtualAddress(SYSTEM_PTE_VA_START.addr() + SYSTEM_PTE_LENGTH);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MappingMode {
@@ -22,12 +30,17 @@ pub enum MappingMode {
 pub enum MemoryError {
     PageTableAllocationError,
     OutOfHyperspace,
+    OutOfSystemPTEs,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VirtualAddress(usize);
 
 impl VirtualAddress {
+    pub const fn from_addr(addr: usize) -> Self {
+        Self(addr)
+    }
+
     pub fn from_pointer<T>(ptr: *const T) -> Self {
         Self(ptr as usize)
     }
@@ -36,7 +49,7 @@ impl VirtualAddress {
         Self::from_pointer(rf as *const T)
     }
 
-    pub fn addr(&self) -> usize {
+    pub const fn addr(&self) -> usize {
         self.0
     }
 
@@ -46,6 +59,14 @@ impl VirtualAddress {
 
     pub fn pt_index(&self) -> usize {
         (self.0 >> 12) & (1024 - 1)
+    }
+
+    pub const fn as_ptr<T>(&self) -> *const T {
+        self.0 as *const T
+    }
+
+    pub const fn as_mut_ptr<T>(&self) -> *mut T {
+        self.0 as *mut T
     }
 }
 
@@ -172,6 +193,7 @@ impl TryFrom<RawPageTableEntry> for PresentPageTableEntry {
 }
 
 #[repr(C, align(4096))]
+#[derive(Debug)]
 pub struct RawPageTable {
     entries: [RawPageTableEntry; 1024],
 }
@@ -212,6 +234,7 @@ struct Hyperspace {
 struct HyperspacePageMapping<'a> {
     parent: &'a mut Hyperspace,
     address: VirtualAddress,
+    phys_addr: PhysicalAddress,
 }
 
 impl<'a> HyperspacePageMapping<'a> {
@@ -226,6 +249,14 @@ impl<'a> HyperspacePageMapping<'a> {
     }
     pub unsafe fn as_mut_ref<T>(&mut self) -> &mut T {
         &mut *self.as_mut_ptr()
+    }
+
+    pub const fn phys_addr(&self) -> PhysicalAddress {
+        self.phys_addr
+    }
+
+    pub const fn virt_addr(&self) -> VirtualAddress {
+        self.address
     }
 }
 
@@ -248,19 +279,20 @@ impl Hyperspace {
     ) -> Result<HyperspacePageMapping<'a>, MemoryError> {
         for (idx, page_entry) in self.page_table.entries.iter_mut().enumerate() {
             if !page_entry.is_present() {
-                kprintln!("Found available hyperspace slot {}", idx);
-
                 *page_entry = PresentPageTableEntry::new_page_reference(
                     paddr.page_frame_index(),
                     MappingMode::ReadWrite,
                 )
                 .into();
 
+                let address: VirtualAddress = (HYPERSPACE_VA_START.0 + (idx * PAGE_SIZE))
+                    .try_into()
+                    .unwrap();
+
                 return Ok(HyperspacePageMapping {
                     parent: self,
-                    address: (HYPERSPACE_VA_START.0 + (idx * PAGE_SIZE))
-                        .try_into()
-                        .unwrap(),
+                    address,
+                    phys_addr: paddr,
                 });
             }
         }
@@ -271,7 +303,6 @@ impl Hyperspace {
     unsafe fn unmap_page(&mut self, vaddr: VirtualAddress) {
         assert!(round_down_to_page(vaddr.addr()) == vaddr.addr());
         assert!(vaddr.pd_index() == HYPERSPACE_VA_START.pd_index());
-        kprintln!("{:?} {:#x}", vaddr, vaddr.pt_index());
         assert!(vaddr.pt_index() < 1024);
 
         let pte = &mut self.page_table.entries[vaddr.pt_index()];
@@ -305,6 +336,12 @@ impl<'a> core::ops::DerefMut for PageTableMapping<'a> {
     }
 }
 
+impl<'a> PageTableMapping<'a> {
+    pub fn phys_addr(&self) -> PhysicalAddress {
+        self.hyperspace_mapping.phys_addr()
+    }
+}
+
 impl<'a> PageMapper<'a> {
     pub unsafe fn identity_map_physical_region(
         &mut self,
@@ -334,8 +371,6 @@ impl<'a> PageMapper<'a> {
 
         for page in (start..end).step_by(PAGE_SIZE) {
             let page = VirtualAddress::try_from(page).expect("invalid address");
-            kprintln!("IDENTITY MAP PAGE {:#x?} MODE {:?}", page, mode);
-
             let mut pt = self.ensure_pd_entry(page)?;
 
             let pt_phys = PhysicalAddress::try_new(page.addr() as u64)
@@ -387,26 +422,136 @@ impl<'a> PageMapper<'a> {
     }
 }
 
-struct KernelVMImpl {
+pub struct KernelVM {
     root_page_table: &'static mut RawPageTable,
     hyperspace: Hyperspace,
+    system_ptes: &'static mut [RawPageTableEntry],
 }
 
-static KERNEL_VM: Mutex<Option<KernelVMImpl>> = Mutex::new(None);
+static KERNEL_VM: Mutex<Option<KernelVM>> = Mutex::new(None);
 
-struct KernelVMLock<'a>(MutexGuard<'a, Option<KernelVMImpl>>);
+pub struct KernelVMLock<'a>(MutexGuard<'a, Option<KernelVM>>);
 
 impl<'a> core::ops::Deref for KernelVMLock<'_> {
-    type Target = KernelVMImpl;
+    type Target = KernelVM;
 
     fn deref(&self) -> &Self::Target {
         self.0.as_ref().unwrap()
     }
 }
 
-pub trait KernelVM {}
+impl<'a> core::ops::DerefMut for KernelVMLock<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
 
-impl KernelVM for KernelVMImpl {}
+impl KernelVM {
+    fn with_mapper<T, F: FnOnce(&mut PageMapper<'_>) -> Result<T, MemoryError>>(
+        &mut self,
+        f: F,
+    ) -> Result<T, MemoryError> {
+        let mut mapper = self.root_page_table.mapper(&mut self.hyperspace);
+        f(&mut mapper)
+    }
+
+    pub fn map_physical_region(
+        &mut self,
+        base: PhysicalAddress,
+        size: usize,
+        mode: MappingMode,
+    ) -> Result<VirtualAddress, MemoryError> {
+        let alloc_base = round_down_to_page(base.addr() as usize);
+        let alloc_limit = round_up_to_page(alloc_base + size);
+
+        let pages = (alloc_limit - alloc_base) / PAGE_SIZE;
+        let (addr, ptes) = self.find_available_ptes(pages)?;
+
+        for (idx, pte) in ptes.iter_mut().enumerate() {
+            *pte = PresentPageTableEntry::new_page_reference(
+                PhysicalAddress::new((alloc_base + (idx * PAGE_SIZE)) as u64).into(),
+                mode,
+            )
+            .into();
+        }
+
+        Ok(VirtualAddress(
+            addr.addr() + alloc_base - base.addr() as usize,
+        ))
+    }
+
+    fn find_available_ptes(
+        &mut self,
+        page_count: usize,
+    ) -> Result<(VirtualAddress, &mut [RawPageTableEntry]), MemoryError> {
+        let total_system_ptes = self.system_ptes.len();
+        let mut idx = 0;
+        while idx + page_count < total_system_ptes {
+            // Skip over any occupied pages
+            if self.system_ptes[idx].is_present() {
+                // skip the page
+                idx += 1;
+            } else {
+                let (start_idx, end_idx) = (idx, idx + page_count);
+                let mut valid_range = true;
+
+                for check_idx in (start_idx + 1)..end_idx {
+                    if self.system_ptes[check_idx].is_present() {
+                        idx = check_idx + 1;
+                        valid_range = false;
+                    }
+                }
+
+                if valid_range {
+                    return Ok((
+                        self.system_pte_index_to_virtual_address(start_idx),
+                        &mut self.system_ptes[start_idx..end_idx],
+                    ));
+                }
+            }
+        }
+
+        Err(MemoryError::OutOfSystemPTEs)
+    }
+
+    fn system_pte_index_to_virtual_address(&self, idx: usize) -> VirtualAddress {
+        VirtualAddress(SYSTEM_PTE_VA_START.addr() + (idx * PAGE_SIZE))
+    }
+}
+
+unsafe fn init_system_ptes(mapper: &mut PageMapper<'_>) -> &'static mut [RawPageTableEntry] {
+    // Start by mapping the first page directory of the system PTEs
+    let mut first_pd = mapper
+        .ensure_pd_entry(SYSTEM_PTE_VA_START)
+        .expect("Failed to create first system PTE PD");
+    first_pd[0] = PresentPageTableEntry::new_page_reference(
+        first_pd.phys_addr().into(),
+        MappingMode::ReadWrite,
+    )
+    .into();
+
+    // Now we do a dangerous thing which is to create a slice covering the whole of the
+    // system ptes range. This is a little cheeky because it isn't all mapped yet, but we will fix that shortly
+    let system_ptes: &mut [MaybeUninit<RawPageTableEntry>] =
+        core::slice::from_raw_parts_mut(SYSTEM_PTE_VA_START.as_mut_ptr(), SYSTEM_PTE_COUNT);
+
+    // Now that we've got all the system PTEs in one place, then we can fill in the rest
+    for idx in 1..SYSTEM_PTE_PAGE_TABLES {
+        let page_table = crate::allocate_page().expect("Failed to allocate system PTE page table");
+        system_ptes[idx] = MaybeUninit::new(
+            PresentPageTableEntry::new_page_reference(page_table.into(), MappingMode::ReadWrite)
+                .into(),
+        );
+    }
+
+    // Finally, zero out the remaining entries
+    for idx in SYSTEM_PTE_PAGE_TABLES..SYSTEM_PTE_COUNT {
+        system_ptes[idx] = MaybeUninit::new(RawPageTableEntry::zero());
+    }
+
+    // And now they're all initialized
+    core::mem::transmute(system_ptes)
+}
 
 pub unsafe fn init() {
     let mut lock = KERNEL_VM.lock();
@@ -431,6 +576,11 @@ pub unsafe fn init() {
     static mut _G_ROOT_PAGE_TABLE: RawPageTable = RawPageTable::empty();
     let root_page_table = &mut _G_ROOT_PAGE_TABLE;
 
+    let pt_phys = PhysicalAddress::try_new(root_page_table as *const RawPageTable as u64)
+        .expect("Root page table must be in identity mapped memory");
+    let pt_phys = RamPhysicalAddress::try_new(pt_phys).expect("Root page table must be in RAM");
+    let pt_pfi = pt_phys.page_frame_index();
+
     let hyperspace_page_table_phys =
         PhysicalAddress::try_new(&_G_HYPERSPACE_PAGE_TABLE as *const RawPageTable as u64)
             .expect("Hyperspace page table must be in identity mapped memory");
@@ -447,68 +597,48 @@ pub unsafe fn init() {
         )
         .into();
 
-    {
-        let mut mapper = root_page_table.mapper(&mut hyperspace);
-        kprintln!("MAP TEXT");
-        mapper
-            .identity_map_physical_region(
-                &__text_start as *const u8,
-                &__text_end as *const u8,
-                MappingMode::ReadExecute,
-            )
-            .expect("Failed to map kernel");
-        kprintln!("MAP RODATA");
-        mapper
-            .identity_map_physical_region(
-                &__rodata_start as *const u8,
-                &__rodata_end as *const u8,
-                MappingMode::Read,
-            )
-            .expect("Failed to map kernel");
-        kprintln!("MAP DATA");
-        mapper
-            .identity_map_physical_region(
-                &__data_start as *const u8,
-                &__data_end as *const u8,
-                MappingMode::ReadWrite,
-            )
-            .expect("Failed to map kernel");
-        kprintln!("MAP BSS");
-        mapper
-            .identity_map_physical_region(
-                &__bss_start as *const u8,
-                &__bss_end as *const u8,
-                MappingMode::ReadWrite,
-            )
-            .expect("Failed to map kernel");
-
-        // This is kinda wrong, but we need it - map the uart into memory - will come up with a more permanent solution to that later
-        mapper
-            .identity_map_physical_region_by_address(
-                PhysicalAddress::new_unchecked(0x10000000),
-                PAGE_SIZE,
-                MappingMode::ReadWrite,
-            )
-            .expect("Failed to map kernel");
-    }
+    let mut mapper = root_page_table.mapper(&mut hyperspace);
+    mapper
+        .identity_map_physical_region(
+            &__text_start as *const u8,
+            &__text_end as *const u8,
+            MappingMode::ReadExecute,
+        )
+        .expect("Failed to map kernel");
+    mapper
+        .identity_map_physical_region(
+            &__rodata_start as *const u8,
+            &__rodata_end as *const u8,
+            MappingMode::Read,
+        )
+        .expect("Failed to map kernel");
+    mapper
+        .identity_map_physical_region(
+            &__data_start as *const u8,
+            &__data_end as *const u8,
+            MappingMode::ReadWrite,
+        )
+        .expect("Failed to map kernel");
+    mapper
+        .identity_map_physical_region(
+            &__bss_start as *const u8,
+            &__bss_end as *const u8,
+            MappingMode::ReadWrite,
+        )
+        .expect("Failed to map kernel");
 
     // Switch over the the kernel page table
-    let pt_phys = PhysicalAddress::try_new(root_page_table as *const RawPageTable as u64)
-        .expect("Root page table must be in identity mapped memory");
-    let pt_phys = RamPhysicalAddress::try_new(pt_phys).expect("Root page table must be in RAM");
-    let pt_pfi = pt_phys.page_frame_index();
-
-    kprintln!("SATP: {:#x}", satp::read().bits());
     satp::set(satp::Mode::Sv32, 0, pt_pfi.pfi() as usize);
-    kprintln!("SATP2: {:#x}", satp::read().bits());
-    panic!("ksjhgdskdf");
 
-    *lock = Some(KernelVMImpl {
+    let system_ptes = init_system_ptes(&mut mapper);
+
+    *lock = Some(KernelVM {
         root_page_table,
         hyperspace,
+        system_ptes,
     });
 }
 
-pub unsafe fn kernel_vm<'a>() -> impl core::ops::Deref<Target = impl KernelVM> {
+pub fn kernel_vm<'a>() -> KernelVMLock<'a> {
     KernelVMLock(KERNEL_VM.lock())
 }
