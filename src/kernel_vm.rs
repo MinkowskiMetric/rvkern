@@ -1,5 +1,5 @@
 use crate::utils::*;
-use crate::{PageFrameIndex, PhysicalAddress, RamPhysicalAddress};
+use crate::{allocate_page, PageFrameIndex, PhysicalAddress, RamPhysicalAddress};
 use core::convert::{TryFrom, TryInto};
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -31,6 +31,7 @@ pub enum MemoryError {
     PageTableAllocationError,
     OutOfHyperspace,
     OutOfSystemPTEs,
+    OutOfMemory,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -392,7 +393,7 @@ impl<'a> PageMapper<'a> {
             self.hyperspace.map_page(pde_val.physical_address())?
         } else {
             let page_directory =
-                crate::allocate_page().ok_or(MemoryError::PageTableAllocationError)?;
+                allocate_page().ok_or(MemoryError::PageTableAllocationError)?;
 
             // Currently we do not support this mapping failing. It is pretty straightforward to support it, I just
             // didn't because running out of hyperspace mapping should be a critical error anyway. All you need to do
@@ -478,6 +479,21 @@ impl KernelVM {
         Ok(VirtualAddress(
             addr.addr() + alloc_base - base.addr() as usize,
         ))
+    }
+
+    pub fn allocate(&mut self, bytes: usize, mode: MappingMode) -> Result<VirtualAddress, MemoryError> {
+        let pages = round_up_to_page(bytes) / PAGE_SIZE;
+        let (addr, ptes) = self.find_available_ptes(pages)?;
+
+        for (idx, pte) in ptes.iter_mut().enumerate() {
+            if let Some(new_page) = allocate_page() {
+                *pte = PresentPageTableEntry::new_page_reference(new_page.into(), mode).into();
+            } else {
+                unimplemented!("Failed to handle memory allocation failure");
+            }
+        }
+
+        Ok(addr)
     }
 
     fn find_available_ptes(

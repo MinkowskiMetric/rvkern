@@ -19,16 +19,18 @@ pub mod utils;
 
 pub use kernel_vm::{kernel_vm, MappingMode, VirtualAddress};
 pub use physmem::{
-    allocate_page, free_page, free_pages, PageFrameIndex, PhysicalAddress, RamPhysicalAddress,
+    allocate_page, free_page, available_pages, PageFrameIndex, PhysicalAddress, RamPhysicalAddress,
 };
 
 global_asm! {include_str!("entry.S")}
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> ! {
-    physmem::init();
     kernel_vm::init();
     kprint::init();
+    physmem::init();
+
+    kernel_vm().allocate(1, MappingMode::ReadWrite).unwrap();
 
     unimplemented!("I haven't written any more kernel yet");
 }

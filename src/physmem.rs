@@ -1,4 +1,4 @@
-use crate::utils::*;
+use crate::{kernel_vm, MappingMode, utils::*};
 use core::convert::TryFrom;
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -75,12 +75,78 @@ struct PageFrameDatabaseZone {
     base_address: PhysicalAddress,
 }
 
-impl PageFrameDatabaseZone {
-    pub fn free_pages(&self) -> usize {
+trait PageZone {
+    fn total_pages(&self) -> usize;
+    fn available_pages(&self) -> usize;
+    fn base(&self) -> PhysicalAddress;
+    fn limit(&self) -> PhysicalAddress;
+
+    fn contains_page(&self, page: PhysicalAddress) -> bool {
+        page >= self.base() && page < self.limit()
+    }
+}
+
+trait PageZoneMut: PageZone {
+    fn allocate_page(&mut self) -> Option<PhysicalAddress>;
+    fn free_page(&mut self, page: PhysicalAddress);
+
+    fn try_free_page(&mut self, page: PhysicalAddress) -> bool {
+        if self.contains_page(page) {
+            self.free_page(page);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<T: PageZone> PageZone for Option<T> {
+    fn total_pages(&self) -> usize {
+        self.as_ref().map(|zone| zone.total_pages()).unwrap_or(0)
+    }
+
+    fn available_pages(&self) -> usize {
+        self.as_ref().map(|zone| zone.available_pages()).unwrap_or(0)
+    }
+
+    fn base(&self) -> PhysicalAddress {
+        self.as_ref().map(|zone| zone.base()).unwrap_or(PhysicalAddress::new(0))
+    }
+
+    fn limit(&self) -> PhysicalAddress {
+        self.as_ref().map(|zone| zone.limit()).unwrap_or(PhysicalAddress::new(0))
+    }
+}
+
+impl<T: PageZoneMut> PageZoneMut for Option<T> {
+    fn allocate_page(&mut self) -> Option<PhysicalAddress> {
+        self.as_mut().and_then(|z| z.allocate_page())
+    }
+    fn free_page(&mut self, page: PhysicalAddress) {
+        self.as_mut().unwrap().free_page(page)
+    }
+}
+
+impl PageZone for PageFrameDatabaseZone {
+    fn total_pages(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn available_pages(&self) -> usize {
         self.available
     }
 
-    pub fn allocate_page(&mut self) -> Option<PhysicalAddress> {
+    fn base(&self) -> PhysicalAddress {
+        self.base_address
+    }
+
+    fn limit(&self) -> PhysicalAddress {
+        PhysicalAddress(self.base().addr() + (self.total_pages() * PAGE_SIZE) as u64)
+    }
+}
+
+impl PageZoneMut for PageFrameDatabaseZone {
+    fn allocate_page(&mut self) -> Option<PhysicalAddress> {
         if let Some(free_page_index) = self.free_list_head {
             match self.entries[free_page_index] {
                 PageFrameDatabaseEntry::Available { next } => {
@@ -100,10 +166,12 @@ impl PageFrameDatabaseZone {
         }
     }
 
-    pub fn free_page(&mut self, addr: PhysicalAddress) {
+    fn free_page(&mut self, addr: PhysicalAddress) {
         unimplemented!()
     }
+}
 
+impl PageFrameDatabaseZone {
     fn page_index_to_physical_address(&self, idx: usize) -> PhysicalAddress {
         PhysicalAddress::new(self.base_address.addr() + (idx * PAGE_SIZE) as u64)
     }
@@ -338,16 +406,62 @@ impl Iterator for PageFrameRange {
     }
 }
 
-pub fn free_pages() -> usize {
-    initial_zone().free_pages()
+unsafe fn create_ram_range(base: PhysicalAddress, limit: PhysicalAddress) -> PageFrameDatabaseZone {
+    let (base, limit) = (round_up_to_page(base.addr() as usize), round_down_to_page(limit.addr() as usize));
+    let pages = (limit - base) / PAGE_SIZE;
+    let entry_bytes = round_up_to_page(core::mem::size_of::<PageFrameDatabaseEntry>() * pages);
+    let vm_reservation = kernel_vm().allocate(entry_bytes, MappingMode::ReadWrite).expect("Failed to allocate memory for page frame database");
+
+    let entries: &mut [core::mem::MaybeUninit<PageFrameDatabaseEntry>] = core::slice::from_raw_parts_mut(vm_reservation.as_mut_ptr(), pages);
+    let mut available = 0;
+    let mut free_list_head = None;
+
+    for (idx, entry) in entries.iter_mut().enumerate() {
+        let addr = PhysicalAddress((base + (idx * PAGE_SIZE)) as u64);
+        *entry = MaybeUninit::new(match get_initial_page_entry(addr) {
+            PageFrameDatabaseEntry::Available { .. } => {
+                available += 1;
+                PageFrameDatabaseEntry::Available {
+                    next: free_list_head.replace(idx),
+                }
+            }
+
+            c => c,
+        });
+    }
+
+    let entries = core::mem::transmute(entries);
+
+    PageFrameDatabaseZone {
+        entries,
+        available,
+        free_list_head,
+        base_address: PhysicalAddress::new(base as u64),
+    }
+}
+
+static EXTRA_RANGE_ZONE: Mutex<Option<PageFrameDatabaseZone>> = Mutex::new(None);
+
+pub fn available_pages() -> usize {
+    initial_zone().available_pages() + EXTRA_RANGE_ZONE.lock().available_pages()
 }
 
 pub fn allocate_page() -> Option<PhysicalAddress> {
-    initial_zone().allocate_page()
+    { EXTRA_RANGE_ZONE.lock().allocate_page() }.or_else(|| initial_zone().allocate_page())
 }
 
 pub unsafe fn free_page(page: impl Into<PhysicalAddress>) {
-    initial_zone().free_page(page.into())
+    let page = page.into();
+    
+    if !EXTRA_RANGE_ZONE.lock().try_free_page(page) {
+        initial_zone().free_page(page);
+    }
 }
 
-pub unsafe fn init() {}
+pub unsafe fn init() {
+    // The initial zone is "self initializing", but as soon as we're able to allocate memory, we run into a need to
+    // initialize the rest of physical memory
+    let extra_range_base = initial_zone().limit();
+    let extra_range = create_ram_range(extra_range_base, ram_end());
+    *EXTRA_RANGE_ZONE.lock() = Some(extra_range);
+}
