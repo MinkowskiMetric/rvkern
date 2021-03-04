@@ -442,6 +442,9 @@ unsafe fn create_ram_range(base: PhysicalAddress, limit: PhysicalAddress) -> Pag
 
 static EXTRA_RANGE_ZONE: Mutex<Option<PageFrameDatabaseZone>> = Mutex::new(None);
 
+pub fn total_pages() -> usize {
+    initial_zone().total_pages() + EXTRA_RANGE_ZONE.lock().total_pages()
+}
 pub fn available_pages() -> usize {
     initial_zone().available_pages() + EXTRA_RANGE_ZONE.lock().available_pages()
 }

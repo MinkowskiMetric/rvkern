@@ -7,9 +7,13 @@ use core::ops::{Index, IndexMut};
 use riscv::register::satp;
 use spin::{Mutex, MutexGuard};
 
-const HYPERSPACE_VA_START: VirtualAddress = VirtualAddress(0xc000_0000);
+mod virtual_address;
 
-const SYSTEM_PTE_VA_START: VirtualAddress = VirtualAddress(0xd000_0000);
+pub use virtual_address::{VirtualAddress};
+
+const HYPERSPACE_VA_START: VirtualAddress = VirtualAddress::from_addr(0xc000_0000);
+
+const SYSTEM_PTE_VA_START: VirtualAddress = VirtualAddress::from_addr(0xd000_0000);
 
 // How many system PTEs do we need? 64MB of kernel memory seems like a good figure, which is
 // 16 page tables, or 16384 page table entries
@@ -17,7 +21,7 @@ const SYSTEM_PTE_PAGE_TABLES: usize = 16;
 const SYSTEM_PTE_COUNT: usize = SYSTEM_PTE_PAGE_TABLES * 1024;
 const SYSTEM_PTE_LENGTH: usize = SYSTEM_PTE_COUNT * PAGE_SIZE;
 const SYSTEM_PTE_VA_END: VirtualAddress =
-    VirtualAddress(SYSTEM_PTE_VA_START.addr() + SYSTEM_PTE_LENGTH);
+    VirtualAddress::from_addr(SYSTEM_PTE_VA_START.addr() + SYSTEM_PTE_LENGTH);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MappingMode {
@@ -32,74 +36,6 @@ pub enum MemoryError {
     OutOfHyperspace,
     OutOfSystemPTEs,
     OutOfMemory,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtualAddress(usize);
-
-impl VirtualAddress {
-    pub const fn from_addr(addr: usize) -> Self {
-        Self(addr)
-    }
-
-    pub fn from_pointer<T>(ptr: *const T) -> Self {
-        Self(ptr as usize)
-    }
-
-    pub fn from_ref<T>(rf: &T) -> Self {
-        Self::from_pointer(rf as *const T)
-    }
-
-    pub const fn addr(&self) -> usize {
-        self.0
-    }
-
-    pub fn pd_index(&self) -> usize {
-        self.0 >> 22
-    }
-
-    pub fn pt_index(&self) -> usize {
-        (self.0 >> 12) & (1024 - 1)
-    }
-
-    pub const fn as_ptr<T>(&self) -> *const T {
-        self.0 as *const T
-    }
-
-    pub const fn as_mut_ptr<T>(&self) -> *mut T {
-        self.0 as *mut T
-    }
-}
-
-impl fmt::Debug for VirtualAddress {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_fmt(format_args!("VirtualAddress({:#x})", self.addr()))
-    }
-}
-
-impl<T> From<*const T> for VirtualAddress {
-    fn from(ptr: *const T) -> Self {
-        Self::from_pointer(ptr)
-    }
-}
-
-impl<T> From<&T> for VirtualAddress {
-    fn from(ptr: &T) -> Self {
-        Self::from_ref(ptr)
-    }
-}
-
-impl<T> From<&mut T> for VirtualAddress {
-    fn from(ptr: &mut T) -> Self {
-        Self::from_ref(ptr)
-    }
-}
-
-impl TryFrom<usize> for VirtualAddress {
-    type Error = core::convert::Infallible;
-    fn try_from(u: usize) -> Result<Self, Self::Error> {
-        Ok(Self(u))
-    }
 }
 
 #[repr(transparent)]
@@ -286,7 +222,7 @@ impl Hyperspace {
                 )
                 .into();
 
-                let address: VirtualAddress = (HYPERSPACE_VA_START.0 + (idx * PAGE_SIZE))
+                let address: VirtualAddress = (HYPERSPACE_VA_START.addr() + (idx * PAGE_SIZE))
                     .try_into()
                     .unwrap();
 
@@ -476,7 +412,7 @@ impl KernelVM {
             .into();
         }
 
-        Ok(VirtualAddress(
+        Ok(VirtualAddress::from_addr(
             addr.addr() + alloc_base - base.addr() as usize,
         ))
     }
@@ -531,7 +467,7 @@ impl KernelVM {
     }
 
     fn system_pte_index_to_virtual_address(&self, idx: usize) -> VirtualAddress {
-        VirtualAddress(SYSTEM_PTE_VA_START.addr() + (idx * PAGE_SIZE))
+        VirtualAddress::from_addr(SYSTEM_PTE_VA_START.addr() + (idx * PAGE_SIZE))
     }
 }
 
