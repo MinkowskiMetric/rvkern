@@ -8,9 +8,11 @@
 #![feature(ptr_as_uninit)]
 #![feature(thread_local)]
 #![feature(try_blocks)]
+
 #[macro_use]
 mod kprint;
 
+mod cpu;
 mod kernel_vm;
 mod panic;
 mod physmem;
@@ -19,7 +21,8 @@ pub mod utils;
 
 pub use kernel_vm::{kernel_vm, MappingMode, VirtualAddress};
 pub use physmem::{
-    allocate_page, total_pages, free_page, available_pages, PageFrameIndex, PhysicalAddress, RamPhysicalAddress,
+    allocate_page, available_pages, free_page, total_pages, PageFrameIndex, PhysicalAddress,
+    RamPhysicalAddress,
 };
 
 global_asm! {include_str!("entry.S")}
@@ -30,8 +33,18 @@ pub unsafe extern "C" fn start() -> ! {
     kprint::init();
     physmem::init();
 
+    cpu::init_bsp();
+
     kernel_vm().allocate(1, MappingMode::ReadWrite).unwrap();
 
-    kprintln!("Kernel running - sort of - {} pages available out of {}", physmem::available_pages(), physmem::total_pages());
+    kprintln!(
+        "Kernel running - sort of - {} pages available out of {}",
+        physmem::available_pages(),
+        physmem::total_pages()
+    );
+
+    let crash: &mut u8 = &mut *(0 as usize as *mut u8);
+    *crash = 17;
+
     unimplemented!("I haven't written any more kernel yet");
 }

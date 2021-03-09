@@ -11,10 +11,9 @@ _entry:
     bnez t0, app_processor_stall
 
     # And load the correct global pointer
-    # TODOTODOTODO how can I verify this is working?
 .option push
 .option norelax
-	la		gp, _global_pointer
+    la gp, __global_pointer$
 .option pop
 
     # Ensure we zero out the BSS segments and the TBSS segments
@@ -36,6 +35,12 @@ _entry:
     # which I don't want to do until I have no choice.
     la a0, __memory_start
     la a1, __memory_end
+    call _identity_map_physical_region
+
+    # For the moment the rust code assumes that the UART is physically mapped at 0x10000000. Let's not upset it too
+    # much for now
+    li a0, 0x10000000
+    add a1, a0, 1
     call _identity_map_physical_region
 
     # Load the page table register and enable paging
@@ -66,6 +71,17 @@ _entry:
     li t0, (1 << 3) | (1 << 7) | (1 << 11)
     csrw mie, t0
 
+    # Delegate all interrupts and exceptions to supervisor mode
+    li t0, 0xffffffff
+    csrw mideleg, t0
+
+    li t0, 0xffffffff
+    csrw medeleg, t0
+
+    # Set up a supervisor trap handler to help debug stuff
+    la t0, s_trap_handler
+    csrw stvec, t0
+
     mret
 
 app_processor_stall:
@@ -74,6 +90,11 @@ app_processor_stall:
     j 3b
 
 m_trap_handler:
+3:
+    wfi
+    j 3b
+
+s_trap_handler:
 3:
     wfi
     j 3b

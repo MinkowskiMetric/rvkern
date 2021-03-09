@@ -13,8 +13,10 @@ mod virtual_address;
 
 pub(super) use hyperspace::{Hyperspace, HyperspacePageMapping};
 pub use page_tables::MappingMode;
-pub(super) use page_tables::{RawPageTable, RawPageTableEntry, PresentPageTableEntry, PageMapper,};
-pub use virtual_address::{VirtualAddress};
+pub(super) use page_tables::{
+    NotPresentPageTableEntry, PageMapper, PresentPageTableEntry, RawPageTable, RawPageTableEntry,
+};
+pub use virtual_address::VirtualAddress;
 
 const HYPERSPACE_VA_START: VirtualAddress = VirtualAddress::from_addr(0xc000_0000);
 
@@ -94,7 +96,11 @@ impl KernelVM {
         ))
     }
 
-    pub fn allocate(&mut self, bytes: usize, mode: MappingMode) -> Result<VirtualAddress, MemoryError> {
+    pub fn allocate(
+        &mut self,
+        bytes: usize,
+        mode: MappingMode,
+    ) -> Result<VirtualAddress, MemoryError> {
         let pages = round_up_to_page(bytes) / PAGE_SIZE;
         let (addr, ptes) = self.find_available_ptes(pages)?;
 
@@ -109,15 +115,43 @@ impl KernelVM {
         Ok(addr)
     }
 
+    pub fn allocate_kernel_stack(&mut self, bytes: usize) -> Result<VirtualAddress, MemoryError> {
+        // We allocate an extra page here for the guard page
+        let pages = (round_up_to_page(bytes) / PAGE_SIZE) + 1;
+        let (addr, ptes) = self.find_available_ptes(pages)?;
+
+        ptes[0] = NotPresentPageTableEntry::guard_page_entry().into();
+
+        for (idx, pte) in ptes.iter_mut().enumerate().skip(1) {
+            if let Some(new_page) = allocate_page() {
+                *pte = PresentPageTableEntry::new_page_reference(
+                    new_page.into(),
+                    MappingMode::ReadWrite,
+                )
+                .into();
+            } else {
+                todo!("Handle memory allocation failure in page {}", idx);
+            }
+        }
+
+        Ok(VirtualAddress::from_addr(addr.addr() + (pages * PAGE_SIZE)))
+    }
+
     fn find_available_ptes(
         &mut self,
         page_count: usize,
     ) -> Result<(VirtualAddress, &mut [RawPageTableEntry]), MemoryError> {
+        fn is_useable_system_pte(pte: RawPageTableEntry) -> bool {
+            match NotPresentPageTableEntry::try_from(pte) {
+                Ok(page) => page.is_zero(),
+                _ => false,
+            }
+        }
+
         let total_system_ptes = self.system_ptes.len();
         let mut idx = 0;
         while idx + page_count < total_system_ptes {
-            // Skip over any occupied pages
-            if self.system_ptes[idx].is_present() {
+            if !is_useable_system_pte(self.system_ptes[idx]) {
                 // skip the page
                 idx += 1;
             } else {
@@ -125,7 +159,7 @@ impl KernelVM {
                 let mut valid_range = true;
 
                 for check_idx in (start_idx + 1)..end_idx {
-                    if self.system_ptes[check_idx].is_present() {
+                    if !is_useable_system_pte(self.system_ptes[check_idx]) {
                         idx = check_idx + 1;
                         valid_range = false;
                     }
@@ -175,7 +209,7 @@ unsafe fn init_system_ptes(mapper: &mut PageMapper<'_>) -> &'static mut [RawPage
 
     // Finally, zero out the remaining entries
     for idx in SYSTEM_PTE_PAGE_TABLES..SYSTEM_PTE_COUNT {
-        system_ptes[idx] = MaybeUninit::new(RawPageTableEntry::zero());
+        system_ptes[idx] = MaybeUninit::new(NotPresentPageTableEntry::zero().into());
     }
 
     // And now they're all initialized
@@ -193,6 +227,10 @@ pub unsafe fn init() {
         static __rodata_end: u8;
         static __data_start: u8;
         static __data_end: u8;
+        static __tdata_start: u8;
+        static __tdata_end: u8;
+        static __tbss_start: u8;
+        static __tbss_end: u8;
         static __bss_start: u8;
         static __bss_end: u8;
         static mut _s_boot_page_table: RawPageTable;
@@ -245,13 +283,6 @@ pub unsafe fn init() {
         .identity_map_physical_region(
             &__data_start as *const u8,
             &__data_end as *const u8,
-            MappingMode::ReadWrite,
-        )
-        .expect("Failed to map kernel");
-    mapper
-        .identity_map_physical_region(
-            &__bss_start as *const u8,
-            &__bss_end as *const u8,
             MappingMode::ReadWrite,
         )
         .expect("Failed to map kernel");

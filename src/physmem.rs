@@ -1,4 +1,4 @@
-use crate::{kernel_vm, MappingMode, utils::*};
+use crate::{kernel_vm, utils::*, MappingMode};
 use core::convert::TryFrom;
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -106,15 +106,21 @@ impl<T: PageZone> PageZone for Option<T> {
     }
 
     fn available_pages(&self) -> usize {
-        self.as_ref().map(|zone| zone.available_pages()).unwrap_or(0)
+        self.as_ref()
+            .map(|zone| zone.available_pages())
+            .unwrap_or(0)
     }
 
     fn base(&self) -> PhysicalAddress {
-        self.as_ref().map(|zone| zone.base()).unwrap_or(PhysicalAddress::new(0))
+        self.as_ref()
+            .map(|zone| zone.base())
+            .unwrap_or(PhysicalAddress::new(0))
     }
 
     fn limit(&self) -> PhysicalAddress {
-        self.as_ref().map(|zone| zone.limit()).unwrap_or(PhysicalAddress::new(0))
+        self.as_ref()
+            .map(|zone| zone.limit())
+            .unwrap_or(PhysicalAddress::new(0))
     }
 }
 
@@ -407,12 +413,18 @@ impl Iterator for PageFrameRange {
 }
 
 unsafe fn create_ram_range(base: PhysicalAddress, limit: PhysicalAddress) -> PageFrameDatabaseZone {
-    let (base, limit) = (round_up_to_page(base.addr() as usize), round_down_to_page(limit.addr() as usize));
+    let (base, limit) = (
+        round_up_to_page(base.addr() as usize),
+        round_down_to_page(limit.addr() as usize),
+    );
     let pages = (limit - base) / PAGE_SIZE;
     let entry_bytes = round_up_to_page(core::mem::size_of::<PageFrameDatabaseEntry>() * pages);
-    let vm_reservation = kernel_vm().allocate(entry_bytes, MappingMode::ReadWrite).expect("Failed to allocate memory for page frame database");
+    let vm_reservation = kernel_vm()
+        .allocate(entry_bytes, MappingMode::ReadWrite)
+        .expect("Failed to allocate memory for page frame database");
 
-    let entries: &mut [core::mem::MaybeUninit<PageFrameDatabaseEntry>] = core::slice::from_raw_parts_mut(vm_reservation.as_mut_ptr(), pages);
+    let entries: &mut [core::mem::MaybeUninit<PageFrameDatabaseEntry>] =
+        core::slice::from_raw_parts_mut(vm_reservation.as_mut_ptr(), pages);
     let mut available = 0;
     let mut free_list_head = None;
 
@@ -455,7 +467,7 @@ pub fn allocate_page() -> Option<PhysicalAddress> {
 
 pub unsafe fn free_page(page: impl Into<PhysicalAddress>) {
     let page = page.into();
-    
+
     if !EXTRA_RANGE_ZONE.lock().try_free_page(page) {
         initial_zone().free_page(page);
     }

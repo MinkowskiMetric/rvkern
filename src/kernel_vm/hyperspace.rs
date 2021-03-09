@@ -1,5 +1,8 @@
-use super::{RawPageTable, RawPageTableEntry, VirtualAddress, PresentPageTableEntry, MemoryError, MappingMode};
-use crate::{PhysicalAddress, utils::*};
+use super::{
+    MappingMode, MemoryError, NotPresentPageTableEntry, PresentPageTableEntry, RawPageTable,
+    RawPageTableEntry, VirtualAddress,
+};
+use crate::{utils::*, PhysicalAddress};
 use core::convert::TryInto;
 
 pub struct Hyperspace {
@@ -46,7 +49,10 @@ impl<'a> Drop for HyperspacePageMapping<'a> {
 
 impl Hyperspace {
     pub fn new(base_address: VirtualAddress, page_table: &'static mut RawPageTable) -> Self {
-        Self { base_address, page_table }
+        Self {
+            base_address,
+            page_table,
+        }
     }
 
     pub unsafe fn map_page<'a>(
@@ -84,7 +90,7 @@ impl Hyperspace {
         let pte = &mut self.page_table[vaddr.pt_index()];
         assert!(pte.is_present());
 
-        *pte = RawPageTableEntry::zero();
+        *pte = NotPresentPageTableEntry::zero().into();
         riscv::asm::sfence_vma(0, vaddr.addr() as usize);
     }
 }

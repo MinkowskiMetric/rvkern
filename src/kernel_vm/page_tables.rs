@@ -1,6 +1,11 @@
-use core::{fmt, mem::MaybeUninit, ops::{Index, IndexMut}, convert::TryFrom};
-use crate::{allocate_page, PhysicalAddress, PageFrameIndex, utils::*, };
-use super::{VirtualAddress, Hyperspace, HyperspacePageMapping, MemoryError};
+use super::{Hyperspace, HyperspacePageMapping, MemoryError, VirtualAddress};
+use crate::{allocate_page, utils::*, PageFrameIndex, PhysicalAddress};
+use core::{
+    convert::TryFrom,
+    fmt,
+    mem::MaybeUninit,
+    ops::{Index, IndexMut},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MappingMode {
@@ -15,32 +20,9 @@ pub struct RawPageTableEntry(u32);
 
 impl RawPageTableEntry {
     const PRESENT: u32 = 1 << 0;
-    const READABLE: u32 = 1 << 1;
-    const WRITEABLE: u32 = 1 << 2;
-    const EXECUTABLE: u32 = 1 << 3;
-
-    pub const fn zero() -> Self {
-        Self(0)
-    }
 
     pub const fn is_present(&self) -> bool {
         0 != self.0 & Self::PRESENT
-    }
-
-    pub const fn is_readable(&self) -> bool {
-        0 != self.0 & Self::READABLE
-    }
-
-    pub const fn is_writeable(&self) -> bool {
-        0 != self.0 & Self::WRITEABLE
-    }
-
-    pub const fn is_executable(&self) -> bool {
-        0 != self.0 & Self::EXECUTABLE
-    }
-
-    pub const fn is_leaf(&self) -> bool {
-        self.is_readable() || self.is_writeable() || self.is_executable()
     }
 }
 
@@ -55,6 +37,10 @@ impl fmt::Debug for RawPageTableEntry {
 pub struct PresentPageTableEntry(RawPageTableEntry);
 
 impl PresentPageTableEntry {
+    const READABLE: u32 = 1 << 1;
+    const WRITEABLE: u32 = 1 << 2;
+    const EXECUTABLE: u32 = 1 << 3;
+
     pub fn new_page_table_reference(pfi: PageFrameIndex) -> Self {
         Self(RawPageTableEntry(
             (pfi.pfi() << 10) | RawPageTableEntry::PRESENT,
@@ -63,16 +49,16 @@ impl PresentPageTableEntry {
 
     pub fn new_page_reference(pfi: PageFrameIndex, mode: MappingMode) -> Self {
         let mode_bits = match mode {
-            MappingMode::Read => RawPageTableEntry::PRESENT | RawPageTableEntry::READABLE,
+            MappingMode::Read => RawPageTableEntry::PRESENT | PresentPageTableEntry::READABLE,
             MappingMode::ReadWrite => {
                 RawPageTableEntry::PRESENT
-                    | RawPageTableEntry::READABLE
-                    | RawPageTableEntry::WRITEABLE
+                    | PresentPageTableEntry::READABLE
+                    | PresentPageTableEntry::WRITEABLE
             }
             MappingMode::ReadExecute => {
                 RawPageTableEntry::PRESENT
-                    | RawPageTableEntry::READABLE
-                    | RawPageTableEntry::EXECUTABLE
+                    | PresentPageTableEntry::READABLE
+                    | PresentPageTableEntry::EXECUTABLE
             }
         };
         Self(RawPageTableEntry((pfi.pfi() << 10) | mode_bits))
@@ -80,6 +66,22 @@ impl PresentPageTableEntry {
 
     pub fn physical_address(&self) -> PhysicalAddress {
         PageFrameIndex::new(self.0 .0 >> 10).physical_address()
+    }
+
+    pub const fn is_readable(&self) -> bool {
+        0 != self.0 .0 & Self::READABLE
+    }
+
+    pub const fn is_writeable(&self) -> bool {
+        0 != self.0 .0 & Self::WRITEABLE
+    }
+
+    pub const fn is_executable(&self) -> bool {
+        0 != self.0 .0 & Self::EXECUTABLE
+    }
+
+    pub const fn is_leaf(&self) -> bool {
+        self.is_readable() || self.is_writeable() || self.is_executable()
     }
 }
 
@@ -100,6 +102,43 @@ impl TryFrom<RawPageTableEntry> for PresentPageTableEntry {
     }
 }
 
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NotPresentPageTableEntry(RawPageTableEntry);
+
+impl NotPresentPageTableEntry {
+    const GUARD_PAGE: u32 = 1 << 1;
+
+    pub const fn zero() -> Self {
+        Self(RawPageTableEntry(0))
+    }
+
+    pub const fn is_zero(&self) -> bool {
+        self.0 .0 == 0
+    }
+
+    pub const fn guard_page_entry() -> Self {
+        Self(RawPageTableEntry(Self::GUARD_PAGE))
+    }
+}
+
+impl From<NotPresentPageTableEntry> for RawPageTableEntry {
+    fn from(ppte: NotPresentPageTableEntry) -> Self {
+        ppte.0
+    }
+}
+
+impl TryFrom<RawPageTableEntry> for NotPresentPageTableEntry {
+    type Error = &'static str;
+    fn try_from(rpte: RawPageTableEntry) -> Result<Self, Self::Error> {
+        if !rpte.is_present() {
+            Ok(Self(rpte))
+        } else {
+            Err("Page not present")
+        }
+    }
+}
+
 #[repr(C, align(4096))]
 #[derive(Debug)]
 pub struct RawPageTable {
@@ -109,7 +148,7 @@ pub struct RawPageTable {
 impl RawPageTable {
     pub const fn empty() -> Self {
         Self {
-            entries: [RawPageTableEntry::zero(); 1024],
+            entries: [NotPresentPageTableEntry::zero().0; 1024],
         }
     }
 
@@ -239,8 +278,7 @@ impl<'a> PageMapper<'a> {
         let hyperspace_mapping = if let Ok(pde_val) = PresentPageTableEntry::try_from(*pde) {
             self.hyperspace.map_page(pde_val.physical_address())?
         } else {
-            let page_directory =
-                allocate_page().ok_or(MemoryError::PageTableAllocationError)?;
+            let page_directory = allocate_page().ok_or(MemoryError::PageTableAllocationError)?;
 
             // Currently we do not support this mapping failing. It is pretty straightforward to support it, I just
             // didn't because running out of hyperspace mapping should be a critical error anyway. All you need to do
@@ -254,7 +292,7 @@ impl<'a> PageMapper<'a> {
             let new_mapping_entries: &mut [MaybeUninit<RawPageTableEntry>; 1024] =
                 mapping.as_mut_ref();
             for entry in new_mapping_entries.iter_mut() {
-                entry.write(RawPageTableEntry::zero());
+                entry.write(NotPresentPageTableEntry::zero().into());
             }
 
             // Insert it into the page table

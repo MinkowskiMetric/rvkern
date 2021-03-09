@@ -1,5 +1,7 @@
-
-use core::{fmt,convert::{TryFrom, TryInto}};
+use core::{
+    convert::{TryFrom, TryInto},
+    fmt,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VirtualAddress(usize);
