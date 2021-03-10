@@ -8,10 +8,12 @@ use riscv::register::satp;
 use spin::{Mutex, MutexGuard};
 
 mod hyperspace;
+mod kernel_stack;
 mod page_tables;
 mod virtual_address;
 
 pub(super) use hyperspace::{Hyperspace, HyperspacePageMapping};
+pub use kernel_stack::KernelStack;
 pub use page_tables::MappingMode;
 pub(super) use page_tables::{
     NotPresentPageTableEntry, PageMapper, PresentPageTableEntry, RawPageTable, RawPageTableEntry,
@@ -115,7 +117,7 @@ impl KernelVM {
         Ok(addr)
     }
 
-    pub fn allocate_kernel_stack(&mut self, bytes: usize) -> Result<VirtualAddress, MemoryError> {
+    pub fn allocate_kernel_stack(&mut self, bytes: usize) -> Result<KernelStack, MemoryError> {
         // We allocate an extra page here for the guard page
         let pages = (round_up_to_page(bytes) / PAGE_SIZE) + 1;
         let (addr, ptes) = self.find_available_ptes(pages)?;
@@ -134,7 +136,7 @@ impl KernelVM {
             }
         }
 
-        Ok(VirtualAddress::from_addr(addr.addr() + (pages * PAGE_SIZE)))
+        Ok(KernelStack::from_allocation(addr, pages))
     }
 
     fn find_available_ptes(

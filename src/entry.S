@@ -138,6 +138,18 @@ _identity_map_physical_region:
     # done
     ret
 
+.section .text
+.global stack_trampoline
+stack_trampoline:
+    # fn stack_trampoline(stack: usize, ctxt: usize, f: unsafe extern "C" fn(ctxt: usize) -> !) -> !;
+
+    # Set the stack pointer up
+    add sp, a0, zero
+    # Set up the arguments
+    add a0, a1, zero
+    # Call
+    jalr zero, a2, 0
+
 .section .bss
 .balign 4096
 .global _boot_stack

@@ -31,26 +31,6 @@ SECTIONS
         *(.rodata*)
     } 
 
-    .tdata : {
-        __tdata_start = .;
-        . = ALIGN(16);
-        /* Allocate space for the TCB */
-        . += 4;
-        . = ALIGN(16);
-
-        *(.tdata*)
-        __tdata_end = .;
-    } 
-
-    .tbss : {
-        __tbss_start = .;
-        *(.tbss)
-        *(.tbss.*)
-        *(.gnu.linkonce.tb.*)
-        . = ALIGN(16);
-        __tbss_end = .;
-    } 
-
     . = ALIGN(4096);
     __rodata_end = .;
     __data_start = .;
@@ -73,6 +53,26 @@ SECTIONS
         *(gnu.linkonce.s.*)
     } 
 
+    .tdata : {
+        __tdata_start = .;
+        . = ALIGN(16);
+        /* Allocate space for the TCB */
+        . += 4;
+        . = ALIGN(16);
+
+        *(.tdata*)
+        __tdata_end = .;
+    } 
+
+    .tbss : {
+        __tbss_start = .;
+        *(.tbss)
+        *(.tbss.*)
+        *(.gnu.linkonce.tb.*)
+        . = ALIGN(16);
+        __tbss_end = .;
+    } 
+
     . = ALIGN(16);
     __bss_start = .;
     .sbss : {
@@ -80,6 +80,7 @@ SECTIONS
         *(.sbss .sbss.* .gnu.linkonce.sb.*)
         *(.scommon)
     }
+
     .bss : {
         *(.bss*)
     }
