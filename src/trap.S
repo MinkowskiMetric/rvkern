@@ -100,6 +100,14 @@ _save_context:
     jal zero, handle_irq
 
 1:
+    # At this point interrupts are disabled. Since we're not handling an interrupt, we want
+    # to turn them back on if they were enabled before.
+    andi t0, s1, 0x20
+    beqz t0, 1f
+
+    csrs sstatus, 0x02
+
+1:
     # Look for syscalls - we will eventually have special handling for them
     li t0, 8        # 8 is the exception vector for user mode sys calls
     beq s4, t0, handle_syscall

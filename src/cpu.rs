@@ -142,6 +142,7 @@ pub unsafe fn init_bsp(f: unsafe extern "C" fn() -> !) -> ! {
     riscv::register::sstatus::clear_sum();
     // And that floating point is disabled
     riscv::register::sstatus::set_fs(riscv::register::sstatus::FS::Off);
+    riscv::register::sstatus::set_sie();
 
     // It is now safe to set the trap handler
     riscv::register::stvec::write(
