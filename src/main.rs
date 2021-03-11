@@ -34,7 +34,7 @@ pub unsafe extern "C" fn start() -> ! {
     kprint::init();
     physmem::init();
 
-    cpu::init_bsp(continue_on_bsp);
+    cpu::init_bsp(continue_on_bsp)
 }
 
 unsafe extern "C" fn continue_on_bsp() -> ! {
@@ -46,11 +46,8 @@ unsafe extern "C" fn continue_on_bsp() -> ! {
         physmem::total_pages()
     );
 
-    fn recurse(a: u32) {
-        recurse(a + 1)
-    }
-
-    recurse(0);
+    let crash: &mut u8 = &mut *(0 as usize as *mut u8);
+    *crash = 17;
 
     unimplemented!("I haven't written any more kernel yet");
 }

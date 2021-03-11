@@ -16,6 +16,69 @@ struct KernelThreadControlBlock {
     kernel_stack: VirtualAddress,
 }
 
+macro_rules! exception_handler {
+    ($name:ident) => {
+        #[no_mangle]
+        unsafe extern "C" fn $name(cpu_state: &mut CpuState) {
+            todo!("Exception {}: {:#x?}", stringify!($name), cpu_state)
+        }
+    };
+}
+
+exception_handler!(do_trap_insn_misaligned);
+exception_handler!(do_trap_insn_fault);
+exception_handler!(do_trap_insn_illegal);
+exception_handler!(do_trap_break);
+exception_handler!(do_trap_load_misaligned);
+exception_handler!(do_trap_load_fault);
+exception_handler!(do_trap_store_misaligned);
+exception_handler!(do_trap_store_fault);
+exception_handler!(do_trap_ecall_u);
+exception_handler!(do_trap_ecall_s);
+exception_handler!(do_trap_unknown);
+exception_handler!(do_trap_ecall_m);
+exception_handler!(do_page_fault);
+
+#[repr(C)]
+#[derive(Debug)]
+struct CpuState {
+    ra: usize,
+    gp: usize,
+    t0: usize,
+    t1: usize,
+    t2: usize,
+    s0: usize,
+    s1: usize,
+    a0: usize,
+    a1: usize,
+    a2: usize,
+    a3: usize,
+    a4: usize,
+    a5: usize,
+    a6: usize,
+    a7: usize,
+    s2: usize,
+    s3: usize,
+    s4: usize,
+    s5: usize,
+    s6: usize,
+    s7: usize,
+    s8: usize,
+    s9: usize,
+    s10: usize,
+    s11: usize,
+    t3: usize,
+    t4: usize,
+    t5: usize,
+    t6: usize,
+    sp: usize,
+    sstatus: usize,
+    sepc: usize,
+    stval: usize,
+    scause: usize,
+    sscratch: usize,
+}
+
 unsafe fn initialize_tls_data(kernel_stack: &mut KernelStack) -> NonNull<KernelThreadControlBlock> {
     extern "C" {
         static __tdata_start: u8;
@@ -52,21 +115,14 @@ unsafe fn initialize_tls_data(kernel_stack: &mut KernelStack) -> NonNull<KernelT
     tcb_ptr
 }
 
+#[no_mangle]
+unsafe extern "C" fn handle_irq(cpu_state: &mut CpuState) {
+    todo!("handle_irq {:#x?}", cpu_state)
+}
+
 pub unsafe fn init_bsp(f: unsafe extern "C" fn() -> !) -> ! {
     extern "C" {
         fn s_trap_entry();
-        static __text_start: u8;
-        static __text_end: u8;
-        static __rodata_start: u8;
-        static __rodata_end: u8;
-        static __data_start: u8;
-        static __data_end: u8;
-        static __tdata_start: u8;
-        static __tdata_end: u8;
-        static __tbss_start: u8;
-        static __tbss_end: u8;
-        static __bss_start: u8;
-        static __bss_end: u8;
     }
 
     // Allocate a stack for the boot CPU
@@ -79,6 +135,19 @@ pub unsafe fn init_bsp(f: unsafe extern "C" fn() -> !) -> ! {
         "addi tp, {}, 0",
         in(reg) kernel_tcb.as_ptr(),
     }
+
+    // Ensure that while we're in kernel mode the sscratch register is 0
+    riscv::register::sscratch::write(0);
+    // And that accessing user mode memory is disabled
+    riscv::register::sstatus::clear_sum();
+    // And that floating point is disabled
+    riscv::register::sstatus::set_fs(riscv::register::sstatus::FS::Off);
+
+    // It is now safe to set the trap handler
+    riscv::register::stvec::write(
+        s_trap_entry as usize,
+        riscv::register::stvec::TrapMode::Direct,
+    );
 
     kernel_stack.call_on_stack(f)
 }
