@@ -46,8 +46,11 @@ unsafe extern "C" fn continue_on_bsp() -> ! {
         physmem::total_pages()
     );
 
-    let crash: &mut u8 = &mut *(0 as usize as *mut u8);
-    *crash = 17;
+    fn recurse(i: u32) -> u32 {
+        recurse(i + 1)
+    }
+
+    recurse(0);
 
     unimplemented!("I haven't written any more kernel yet");
 }

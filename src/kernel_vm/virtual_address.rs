@@ -11,6 +11,10 @@ impl VirtualAddress {
         Self(addr)
     }
 
+    pub const fn zero() -> Self {
+        Self(0)
+    }
+
     pub fn from_pointer<T>(ptr: *const T) -> Self {
         Self(ptr as usize)
     }

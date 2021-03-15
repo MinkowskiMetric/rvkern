@@ -10,19 +10,36 @@ s_trap_entry:
 
     # Swap the sscratch register with tp
     csrrw tp, sscratch, tp
-    bnez tp, _save_context
+    bnez tp, _user_save_context
 
-    # it is not clear how we handle a kernel mode stack overflow here. We're about to double fault in that
-    # case.
-
-    # sscratch was zero, so we need to restore the tp since we're still in kernel mode
+    # This originated in kernel mode, so restore the stack pointer
     csrr tp, sscratch
-    # Temporarily store the current stack pointer in the TLS
+    # Store the current stack pointer in the TLS scratch stack slot
     sw sp, 0(tp)
 
-_save_context:
-    sw sp, 4(tp)
+    # Now we can use sp as a scratch register for a moment - we need to figure out whether this
+    # was an interrupt or an exception
+    csrr sp, scause
+    blt sp, zero, _interrupt_save_context
+
+    # This is an exception from kernel mode so load the kernel exception stack
+    lw sp, 8(tp)
+    j _common_save_context
+
+_interrupt_save_context:
+    # This is an interrupt from kernel mode so reload the original stack pointer and we will just nest on that
     lw sp, 0(tp)
+    j _common_save_context
+
+_user_save_context:
+    # At this point tp is known to be good. Everything else is broken
+    # Load the regular kernel stack
+    lw sp, 4(tp)
+
+_common_save_context:
+    # At this point, original tp is safely in sscratch, and sp is saved in 0(tp) and sp is good
+    # so we can save the rest of the context
+
     addi sp, sp, -140           # make space for the stack frame
 
     # x0 is the zero register, so no need to save that
@@ -63,7 +80,7 @@ _save_context:
 
     # Reload the user stack pointer and store it in the trap frame along
     # with the status registers
-    lw s0, 4(tp)
+    lw s0, 0(tp)
     csrrc s1, sstatus, t0
     csrr s2, sepc
     csrr s3, stval

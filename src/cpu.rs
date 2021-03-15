@@ -13,7 +13,9 @@ static mut HELLO4: [u32; 17] = [0; 17];
 
 #[repr(C)]
 struct KernelThreadControlBlock {
-    kernel_stack: VirtualAddress,
+    stack_scratch: VirtualAddress,
+    kernel_interrupt: VirtualAddress,
+    kernel_fault: VirtualAddress,
 }
 
 macro_rules! exception_handler {
@@ -79,7 +81,10 @@ struct CpuState {
     sscratch: usize,
 }
 
-unsafe fn initialize_tls_data(kernel_stack: &mut KernelStack) -> NonNull<KernelThreadControlBlock> {
+unsafe fn initialize_tls_data(
+    kernel_stack: &mut KernelStack,
+    fault_stack: &KernelStack,
+) -> NonNull<KernelThreadControlBlock> {
     extern "C" {
         static __tdata_start: u8;
         static __tdata_end: u8;
@@ -109,7 +114,9 @@ unsafe fn initialize_tls_data(kernel_stack: &mut KernelStack) -> NonNull<KernelT
     let mut tcb_ptr = tls_data_dest.cast();
 
     tcb_ptr.as_uninit_mut().write(KernelThreadControlBlock {
-        kernel_stack: kernel_stack.top(),
+        stack_scratch: VirtualAddress::zero(),
+        kernel_interrupt: kernel_stack.top(),
+        kernel_fault: fault_stack.top(),
     });
 
     tcb_ptr
@@ -130,7 +137,11 @@ pub unsafe fn init_bsp(f: unsafe extern "C" fn() -> !) -> ! {
         .allocate_kernel_stack(16384)
         .expect("Failed to allocate BSP kernel stack");
 
-    let kernel_tcb = initialize_tls_data(&mut kernel_stack);
+    let mut fault_stack = kernel_vm()
+        .allocate_kernel_stack(8192)
+        .expect("Failed to allocate BSP fault stack");
+
+    let kernel_tcb = initialize_tls_data(&mut kernel_stack, &fault_stack);
     asm! {
         "addi tp, {}, 0",
         in(reg) kernel_tcb.as_ptr(),
